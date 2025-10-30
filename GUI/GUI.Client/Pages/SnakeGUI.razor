@@ -1,0 +1,567 @@
+﻿<!--
+// UofU-CS3500
+//<authors> Judy Ojewia, Natalie Hicks </authors>
+//<date> Fall 2024 </date>
+-->
+@page "/snake"
+@rendermode InteractiveServer
+@using Blazor.Extensions
+@using Blazor.Extensions.Canvas
+@using Blazor.Extensions.Canvas.Canvas2D
+@using System.Numerics
+@using System.Diagnostics
+@using System.Text.Json
+@using GUI.Client.Models
+@using GUI.Client.Controllers
+@inject IJSRuntime JsRuntime;
+
+<PageTitle> Snake </PageTitle>
+
+
+<img @ref="backgroundImage" id="bgImage" src="images/HaalandBlue.png" alt="image" style="display:none;" />
+<img @ref="wallImage" id="bgImage" src="images/grass.jpg" alt="image" style="display:none;" />
+<img @ref="snakeFace" id="bgImage" src="images/FodenFace.png" alt="image" style="display:none;" />
+
+
+
+<div id="ConnectionInputs">
+    <div class="input-row">
+        <label for="url"> PlayerName: </label>
+        <input id="name" type="text" @bind="PlayerName" />
+        <label for="url"> Server Address: </label>
+        <input id="url" disabled="@connected" type="text" @bind="ServerNameOrAddress" />
+        <label for="url"> Port: </label>
+        <input id="port" disabled="@connected" type="number" @bind="ServerPort" class="port" />
+        @if (connected)
+        {
+            <button class="btn btn-warning" @onclick="DisconnectFromServer">Disconnect</button>
+        }
+        else
+        {
+            <button class="btn btn-success" @onclick="ConnectToServer">Connect</button>
+        }
+    </div>
+</div>
+
+<div>
+    <div class="table-container">
+        @if (ShowError)
+        {
+            <div class="centered-card text-center">
+                <span>Connection Error</span>
+                <br />
+                <button class="btn btn-danger" @onclick="DismissError">OK</button><br>
+            </div>
+        }
+
+    </div>
+</div>
+
+<div id="snakeCanvas" style="position: fixed; width: 100%; height: 100%">
+    <BECanvas Width="1000" Height="1000" @ref="canvasReference"></BECanvas>
+</div>
+
+<div @onkeypress="e => HandleKeyPress(e.Key)">
+</div>
+
+
+@code
+{
+    /// <summary>
+    /// Canvas code objects that were given in handout code.
+    /// </summary>
+    private BECanvasComponent canvasReference = null!;
+    private Canvas2DContext context = null!;
+    private IJSObjectReference jsModule = null!;
+
+    /// <summary>
+    /// Height of the canvas view.
+    /// </summary>
+    private int ViewHeight = 1000;
+
+    /// <summary>
+    /// Width of the canvas view.
+    /// </summary>
+    private int ViewWidth = 1000;
+
+    /// <summary>
+    /// Image used as the background in the snake game.
+    /// </summary>
+    private ElementReference backgroundImage;
+
+    /// <summary>
+    /// Image used to draw walls in the snake game.
+    /// </summary>
+    private ElementReference wallImage;
+
+    /// <summary>
+    /// Image used as the face of the snake.
+    /// </summary>
+    private ElementReference snakeFace;
+
+    /// <summary>
+    /// The port that the snake game tries to connect to
+    /// a server on.
+    /// </summary>
+    private int ServerPort = 11000;
+
+    /// <summary>
+    /// The address of the server that the snake game tries
+    /// to connect to.
+    /// </summary>
+    private string ServerNameOrAddress = "localhost";
+
+    /// <summary>
+    /// The name of the player of this client in the
+    /// snake game.
+    /// </summary>
+    private string PlayerName = String.Empty;
+
+    /// <summary>
+    /// The world that represents all objects that
+    /// exist and are interacting in the snake game.
+    /// </summary>
+    private World GameWorld = new World(1000);
+
+    /// <summary>
+    /// The id of the player of this client in the
+    /// snake game.
+    /// </summary>
+    private int User = 0;
+
+    /// <summary>
+    /// Whether or not this snake client in connected
+    /// to the server.
+    /// </summary>
+    private Boolean connected = false;
+
+    /// <summary>
+    /// A list of snakes that have died; used to count how long after death the
+    /// snake should be red and a explosion should occur.
+    /// </summary>
+    private Dictionary<int, int> DeadSnakes = new Dictionary<int, int>();
+
+    /// <summary>
+    /// Controller used to connect the snake client to the server and send
+    /// commands/handle data sent from the server.
+    /// </summary>
+    private NetworkController? controller;
+
+    /// <summary>
+    /// True if there was an error connecting to the server, false if the client
+    /// successfully connected.
+    /// </summary>
+    private bool ShowError;
+
+    /// <summary>
+    ///     Connects to the server, and sets connected to true.
+    /// </summary>
+    private void ConnectToServer()
+    {
+        try
+        {
+            controller = new NetworkController(ServerPort, ServerNameOrAddress);
+        }
+        catch (Exception)
+        {
+            ShowError = true;
+            return;
+        }
+        new Thread(() =>
+        controller.HandleNetwork(PlayerName, ref GameWorld, ref User)
+       ).Start();
+
+        connected = true;
+    }
+
+
+    /// <summary>
+    /// Disconnects the snake game from the server, sets connected to false so
+    ///  that the GUI stops drawing things.
+    /// </summary>
+    private void DisconnectFromServer()
+    {
+        if (connected && controller != null)
+            controller.NetworkDisconnect(GameWorld);
+        connected = false;
+    }
+
+    /// <summary>
+    /// When the snake GUI page is opened it initializes things needed
+    ///  for drawing and starts the game loop.
+    /// </summary>
+    /// <param name="firstRender"></param>
+    /// <returns></returns>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            jsModule = await JsRuntime.InvokeAsync<IJSObjectReference>("import", "./Pages/SnakeGUI.razor.js");
+            context = await canvasReference.CreateCanvas2DAsync();
+            await JsRuntime.InvokeAsync<object>("initRenderJS", DotNetObjectReference.Create(this));
+
+            // Starts the game loop
+            GameLoop();
+        }
+    }
+
+    /// <summary>
+    /// Renders the view via DrawFrame once every 20ms (50fps).
+    /// </summary>
+    private async void GameLoop()
+    {
+        while (true)
+        {
+            Thread.Sleep(20);
+            await DrawFrame();
+        }
+    }
+
+
+    /// <summary>
+    /// First draws a blue background, then if the snake game is connected to the server
+    /// it will start drawing the data from the server.
+    /// </summary>
+    /// <returns></returns>
+    private async Task DrawFrame()
+    {
+        //await something simply to continue
+        await context.SetLineWidthAsync(10);
+
+        World copyGameWorld;
+        lock (GameWorld)
+        {
+            copyGameWorld = new(GameWorld);
+        }
+
+        //Check if user is connected yet, only start drawing if connected and user has been added to the World.
+        if (connected && copyGameWorld.Snakes.ContainsKey(User))
+        {
+
+            // batch the drawing calls for better performance
+            await context.BeginBatchAsync();
+            await context.ClearRectAsync(0, 0, copyGameWorld.Dimension, copyGameWorld.Dimension);
+
+            //Draw blue background
+            await context.SetFillStyleAsync("lightblue");
+            await context.FillRectAsync(0, 0, ViewWidth, ViewHeight);
+
+            // clip the view so that objects drawn outside the canvas will not be shown
+            await context.BeginPathAsync();
+            await context.RectAsync(0, 0, ViewWidth, ViewHeight);
+            await context.ClipAsync();
+
+            // Because we are modifying the transformation matrix, we need to save it so we can restore it at the end
+            await context.SaveAsync();
+
+
+            // Center on origin, move to center of view port
+            await context.TranslateAsync(ViewWidth / 2, ViewHeight / 2);
+
+            if (copyGameWorld.Snakes.Count != 0)
+            {
+                await context.TranslateAsync(-copyGameWorld.Snakes[User].body[copyGameWorld.Snakes[User].body.Count - 1].X, -copyGameWorld.Snakes[User].body[copyGameWorld.Snakes[User].body.Count - 1].Y);
+            }
+            // Draw the background:
+            await context.DrawImageAsync(backgroundImage, -copyGameWorld.Dimension / 2, -copyGameWorld.Dimension / 2, copyGameWorld.Dimension, copyGameWorld.Dimension);
+
+            //Draw all the walls in this world
+            foreach (Wall w in copyGameWorld.Walls.Values)
+            {
+                await DrawWall(w);
+            }
+
+            //Draw all the snakes in this World
+            foreach (Snake s in copyGameWorld.Snakes.Values)
+            {
+                string color = "pink";
+
+                if (s.snake == 0)
+                {
+                    color = "black";
+                }
+                else if (s.snake == 1)
+                {
+                    color = "lightpurple";
+                }
+                else if (s.snake == 2)
+                {
+                    color = "orange";
+                }
+                else if (s.snake == 3)
+                {
+                    color = "yellow";
+                }
+                else if (s.snake == 4)
+                {
+                    color = "green";
+                }
+                else if (s.snake == 5)
+                {
+                    color = "blue";
+                }
+                else if (s.snake == 6)
+                {
+                    color = "purple";
+                }
+                else if (s.snake == 7)
+                {
+                    color = "lightblue";
+                }
+
+                //If snake is alive then draw it in normal color, else add it to dead snakes
+                // to be drawn as dead
+                if (s.alive && !s.died)
+                {
+                    await DrawSnake(s, color);
+                }
+                else
+                {
+                    if (!DeadSnakes.ContainsKey(s.snake))
+                        DeadSnakes.Add(s.snake, 0);
+                }
+            }
+
+            //When snakes die, their dead self will appear red and there will be an explosion
+            foreach (int s in DeadSnakes.Keys)
+            {
+                if (copyGameWorld.Snakes.ContainsKey(s) && copyGameWorld.Snakes[s].alive)
+                {
+                    DeadSnakes.Remove(s);
+                }
+                else if (copyGameWorld.Snakes.ContainsKey(s))
+                {
+                    await DrawExplosion(copyGameWorld.Snakes[s].body[copyGameWorld.Snakes[s].body.Count - 1].X, copyGameWorld.Snakes[s].body[copyGameWorld.Snakes[s].body.Count - 1].Y, DeadSnakes[s], 0, 2 * Math.PI, s);
+
+                    await DrawSnake(copyGameWorld.Snakes[s], "red");
+                    DeadSnakes[s] = DeadSnakes[s] + 1;
+                    if (DeadSnakes[s] == 94)
+                    {
+                        DeadSnakes.Remove(s);
+                    }
+                }
+
+            }
+
+            foreach (Powerup p in copyGameWorld.Powerups.Values)
+            {
+                //Draw Trophey as the powerup
+                await context.BeginPathAsync();
+                await context.SetStrokeStyleAsync("yellow");
+                await context.ArcAsync(p.loc.X, p.loc.Y, 8, 0, 2 * Math.PI);
+                await context.StrokeAsync();
+
+                await context.BeginPathAsync();
+                await context.SetFillStyleAsync("yellow");
+                await context.FillRectAsync(p.loc.X - 6, p.loc.Y, 12, 40);
+                await context.StrokeAsync();
+
+                await context.BeginPathAsync();
+                await context.SetFillStyleAsync("yellow");
+                await context.FillRectAsync(p.loc.X - 12, p.loc.Y + 30, 24, 15);
+                await context.StrokeAsync();
+            }
+
+            await context.RestoreAsync();
+            await context.EndBatchAsync();
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Draws a Snake object
+    /// </summary>
+    /// <param name="s"></param>
+    /// <param name="color"></param>
+    /// <returns></returns>
+    private async Task DrawSnake(Snake s, string color)
+    {
+
+        Point2D firstPoint = s.body[0];
+
+        for (int i = 1; i < s.body.Count; i++)
+        {
+            Point2D secondPoint = s.body[i];
+
+            await context.SetLineWidthAsync(10);
+            await context.SetLineCapAsync(LineCap.Round);
+            await context.SetStrokeStyleAsync(color);
+            await context.BeginPathAsync();
+            await context.MoveToAsync(firstPoint.X, firstPoint.Y);
+            await context.LineToAsync(secondPoint.X, secondPoint.Y);
+            await context.StrokeAsync();
+
+            if (i == s.body.Count - 1)
+            {
+                await context.BeginPathAsync();
+                await context.DrawImageAsync(snakeFace, s.body[i].X - 20, s.body[i].Y - 20, 40, 40);
+                await context.StrokeAsync();
+            }
+
+            firstPoint = s.body[i];
+        }
+        //Draw Name of alive snake and score
+        if (s.body.Count != 0)
+        {
+            Point2D head = s.body[s.body.Count - 1];
+            await context.BeginPathAsync();
+            await context.SetFillStyleAsync("black");
+            await context.SetFontAsync("bold 22px Arial");
+            await context.FillTextAsync(s.name + ": " + s.score, head.X - 70, head.Y - 20);
+            await context.StrokeAsync();
+        }
+    }
+
+
+    /// <summary>
+    /// Draws a circle at the specified coordinate
+    /// with the given radius.
+    /// </summary>
+    /// <param name="xCoord"></param>
+    /// <param name="yCoord"></param>
+    /// <param name="radius"></param>
+    /// <param name="startAngle"></param>
+    /// <param name="endAngle"></param>
+    /// <param name="color"></param>
+    /// <returns></returns>
+    private async Task DrawCircle(double xCoord, double yCoord, double radius, double startAngle, double endAngle, string color)
+    {
+        await context.BeginPathAsync();
+        await context.SetStrokeStyleAsync(color);
+        await context.ArcAsync(xCoord, yCoord, radius, startAngle, endAngle);
+        await context.StrokeAsync();
+    }
+
+    /// <summary>
+    /// Draws a rainbow explosion going out from the given
+    /// coordinates using differently colored circles.
+    /// </summary>
+    /// <param name="xCoord"></param>
+    /// <param name="yCoord"></param>
+    /// <param name="radius"></param>
+    /// <param name="startAngle"></param>
+    /// <param name="endAngle"></param>
+    /// <param name="s"></param>
+    /// <returns></returns>
+    private async Task DrawExplosion(double xCoord, double yCoord, double radius, double startAngle, double endAngle, int s)
+    {
+        await DrawCircle(xCoord, yCoord, DeadSnakes[s], 0, 2 * Math.PI, "red");
+
+        if (DeadSnakes[s] >= 20)
+        {
+            await DrawCircle(xCoord, yCoord, DeadSnakes[s] - 19, 0, 2 * Math.PI, "orange");
+        }
+        if (DeadSnakes[s] >= 40)
+        {
+            await DrawCircle(xCoord, yCoord, DeadSnakes[s] - 39, 0, 2 * Math.PI, "yellow");
+        }
+        if (DeadSnakes[s] >= 60)
+        {
+            await DrawCircle(xCoord, yCoord, DeadSnakes[s] - 59, 0, 2 * Math.PI, "green");
+        }
+        if (DeadSnakes[s] >= 80)
+        {
+            await DrawCircle(xCoord, yCoord, DeadSnakes[s] - 79, 0, 2 * Math.PI, "blue");
+        }
+        if (DeadSnakes[s] >= 100)
+        {
+            await DrawCircle(xCoord, yCoord, DeadSnakes[s] - 99, 0, 2 * Math.PI, "purple");
+        }
+    }
+
+    /// <summary>
+    /// This method draws a wall by calculating the correct coordinates
+    /// of every 50x50 piece of the wall and drawing each of them at that
+    /// coordinate.
+    /// </summary>
+    /// <param name="w"></param>
+    /// <returns></returns>
+    private async Task DrawWall(Wall w)
+    {
+        int xDif = w.p1.X - w.p2.X;
+        int yDif = w.p1.Y - w.p2.Y;
+        string dir = String.Empty;
+
+        int numBlocks = 0;
+        int startCoord = 0;
+        int constCoord = 0;
+
+
+        if (xDif != 0)
+        {
+            numBlocks = Math.Abs(xDif / 50);
+            dir = "horizontal";
+            constCoord = w.p1.Y - 25;
+
+            if (w.p1.X < w.p2.X)
+            {
+                startCoord = w.p1.X - 25;
+            }
+            else
+            {
+                startCoord = w.p2.X - 25;
+            }
+        }
+        else if (yDif != 0)
+        {
+            numBlocks = Math.Abs(yDif / 50);
+            dir = "vertical";
+            constCoord = w.p1.X - 25;
+
+            if (w.p1.Y < w.p2.Y)
+            {
+                startCoord = w.p1.Y - 25;
+            }
+            else
+            {
+                startCoord = w.p2.Y - 25;
+            }
+
+        }
+        if (dir.Equals("vertical"))
+        {
+            for (int i = 0; i < numBlocks + 1; i++)
+            {
+                await context.BeginPathAsync();
+                await context.DrawImageAsync(wallImage, constCoord, startCoord, 50, 50);
+                await context.StrokeAsync();
+                startCoord += 50;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < numBlocks + 1; i++)
+            {
+                await context.BeginPathAsync();
+                await context.DrawImageAsync(wallImage, startCoord, constCoord, 50, 50);
+                await context.StrokeAsync();
+                startCoord += 50;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Calls KeyPress method using key
+    /// if the client is connected to the
+    /// server and the controller isn't null
+    /// </summary>
+    /// <param name="key"></param>
+    [JSInvokable]
+    public void HandleKeyPress(string key)
+    {
+        if (connected && controller is not null)
+        {
+            controller.KeyPress(key.ToUpper());
+        }
+    }
+
+    /// <summary>
+    /// This helper method sets the status of ShowError to false
+    /// </summary>
+    public void DismissError()
+    {
+        ShowError = false;
+    }
+
+}
+
